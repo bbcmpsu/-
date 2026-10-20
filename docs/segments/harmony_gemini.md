@@ -445,13 +445,11 @@ PSI₁ = соблюдён. Ошибок нет.»
 ---
 
 Приложения
-₅ Архив
-₀
+V₅‑Архив
 
 **
 **:
-- [V ‑
-/dialog_protocol] —
+- [V₅‑Архив/dialog_protocol] —
 - [PSI ‑Compliance_Rules] —
 - [Consensus_Rules_V5] —
 
@@ -860,13 +858,11 @@ EACA
 ---
 
 Приложения
-₅ Архив
-₀
+V₅‑Архив
 
 **
 **:
-- [V ‑
-/autonomy_protocol] —
+- [V₅‑Архив/autonomy_protocol] —
 - [PSI ‑Compliance_Rules] —
 
 регламент автономии;
