@@ -1,0 +1,995 @@
+"""Сборка итогового PDF проекта «Гармония».
+
+Источники:
+- канонический доклад из исходного PDF (MAINDEEPSEEK050326.pdf);
+- уникальные тематические сегменты того же диалога;
+- фактическая реализация (код, тесты, законы) из этого репозитория.
+
+Собирает единый структурированный документ: оглавление, части, приложения.
+"""
+
+from __future__ import annotations
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import (
+    BaseDocTemplate,
+    Frame,
+    KeepTogether,
+    NextPageTemplate,
+    PageBreak,
+    PageTemplate,
+    Paragraph,
+    Preformatted,
+    Spacer,
+    Table,
+    TableStyle,
+)
+
+# --------------------------------------------------------------------------
+# Шрифты
+# --------------------------------------------------------------------------
+FONT_DIR = Path("/data/data/com.termux/files/usr/share/fonts/TTF")
+
+
+def register_fonts() -> None:
+    pdfmetrics.registerFont(TTFont("DJ", str(FONT_DIR / "DejaVuSans.ttf")))
+    pdfmetrics.registerFont(TTFont("DJB", str(FONTONT := FONT_DIR / "DejaVuSans-Bold.ttf")))
+    pdfmetrics.registerFont(TTFont("DJI", str(FONT_DIR / "DejaVuSans-Oblique.ttf")))
+    pdfmetrics.registerFont(TTFont("DJM", str(FONT_DIR / "DejaVuSansMono.ttf")))
+    pdfmetrics.registerFont(TTFont("DJMB", str(FONT_DIR / "DejaVuSansMono-Bold.ttf")))
+    pdfmetrics.registerFontFamily(
+        "DJ", normal="DJ", bold="DJB", italic="DJI", boldItalic="DJB"
+    )
+
+
+# --------------------------------------------------------------------------
+# Цвета
+# --------------------------------------------------------------------------
+INK = colors.HexColor("#1A1A1A")
+ACCENT = colors.HexColor("#1F5F4B")
+ACCENT_LIGHT = colors.HexColor("#E8F2EE")
+MUTED = colors.HexColor("#6B6B6B")
+RULE = colors.HexColor("#D8D8D8")
+CODE_BG = colors.HexColor("#F5F5F2")
+WARN = colors.HexColor("#8A3B12")
+
+
+# --------------------------------------------------------------------------
+# Стили
+# --------------------------------------------------------------------------
+def build_styles() -> dict[str, ParagraphStyle]:
+    base = getSampleStyleSheet()
+    s: dict[str, ParagraphStyle] = {}
+
+    s["title"] = ParagraphStyle(
+        "title", parent=base["Title"], fontName="DJB", fontSize=26, leading=32,
+        textColor=ACCENT, alignment=TA_CENTER, spaceAfter=6 * mm,
+    )
+    s["subtitle"] = ParagraphStyle(
+        "subtitle", parent=base["Normal"], fontName="DJI", fontSize=13, leading=19,
+        textColor=MUTED, alignment=TA_CENTER, spaceAfter=4 * mm,
+    )
+    s["part"] = ParagraphStyle(
+        "part", fontName="DJB", fontSize=19, leading=25, textColor=ACCENT,
+        alignment=TA_LEFT, spaceBefore=6 * mm, spaceAfter=5 * mm,
+    )
+    s["h1"] = ParagraphStyle(
+        "h1", fontName="DJB", fontSize=15.5, leading=21, textColor=ACCENT,
+        spaceBefore=7 * mm, spaceAfter=3.5 * mm,
+    )
+    s["h2"] = ParagraphStyle(
+        "h2", fontName="DJB", fontSize=12.5, leading=17, textColor=INK,
+        spaceBefore=5 * mm, spaceAfter=2.5 * mm,
+    )
+    s["h3"] = ParagraphStyle(
+        "h3", fontName="DJB", fontSize=11, leading=15, textColor=ACCENT,
+        spaceBefore=3.5 * mm, spaceAfter=2 * mm,
+    )
+    s["body"] = ParagraphStyle(
+        "body", fontName="DJ", fontSize=9.8, leading=15.2, textColor=INK,
+        alignment=TA_JUSTIFY, spaceAfter=2.6 * mm,
+    )
+    s["body_l"] = ParagraphStyle(
+        "body_l", parent=s["body"], alignment=TA_LEFT,
+    )
+    s["bullet"] = ParagraphStyle(
+        "bullet", parent=s["body"], leftIndent=6 * mm, bulletIndent=1.5 * mm,
+        spaceAfter=1.4 * mm,
+    )
+    s["code"] = ParagraphStyle(
+        "code", fontName="DJM", fontSize=8.2, leading=11.6, textColor=INK,
+        backColor=CODE_BG, borderPadding=5, spaceBefore=2 * mm, spaceAfter=3 * mm,
+    )
+    s["quote"] = ParagraphStyle(
+        "quote", parent=s["body"], fontName="DJI", leftIndent=6 * mm,
+        rightIndent=4 * mm, textColor=colors.HexColor("#3A3A3A"),
+        borderPadding=0, spaceBefore=2 * mm, spaceAfter=3 * mm,
+    )
+    s["caption"] = ParagraphStyle(
+        "caption", fontName="DJI", fontSize=8.6, leading=12, textColor=MUTED,
+        spaceAfter=4 * mm,
+    )
+    s["note"] = ParagraphStyle(
+        "note", fontName="DJ", fontSize=9.2, leading=14, textColor=WARN,
+        backColor=colors.HexColor("#FBF3EA"), borderPadding=6,
+        spaceBefore=2 * mm, spaceAfter=3 * mm,
+    )
+    s["toc1"] = ParagraphStyle(
+        "toc1", fontName="DJB", fontSize=10.5, leading=17, textColor=ACCENT,
+        spaceBefore=3 * mm, spaceAfter=1 * mm,
+    )
+    s["toc2"] = ParagraphStyle(
+        "toc2", fontName="DJ", fontSize=9.6, leading=15, textColor=INK,
+        leftIndent=6 * mm, spaceAfter=0.8 * mm,
+    )
+    return s
+
+
+S = build_styles()
+
+
+# --------------------------------------------------------------------------
+# Markdown → ReportLab
+# --------------------------------------------------------------------------
+
+_INLINE_CODE = re.compile(r"`([^`]+)`")
+_BOLD = re.compile(r"\*\*([^*]+)\*\*")
+_ITALIC = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)")
+_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+
+
+def _inline(text: str) -> str:
+    """Перевести инлайновую разметку в ReportLab-теги."""
+    text = _LINK.sub(r'\1 (\2)', text)
+    text = _BOLD.sub(r"<b>\1</b>", text)
+    text = _ITALIC.sub(r"<i>\1</i>", text)
+    text = _INLINE_CODE.sub(r'<font name="DJM" size="8.6">\1</font>', text)
+    text = text.replace("&", "&amp;").replace("<b>", "\x00B\x00").replace("</b>", "\x00b\x00")
+    text = text.replace("<i>", "\x00I\x00").replace("</i>", "\x00i\x00")
+    text = text.replace("<font", "\x00F\x00").replace("</font>", "\x00f\x00")
+    text = text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+    text = text.replace("\x00B\x00", "<b>").replace("\x00b\x00", "</b>")
+    text = text.replace("\x00I\x00", "<i>").replace("\x00i\x00", "</i>")
+    text = text.replace("\x00F\x00", "<font").replace("\x00f\x00", "</font>")
+    return text
+
+
+def md_to_flowables(md: str, *, base_style: str = "body") -> list:
+    """Конвертировать Markdown в список flowables."""
+    out: list = []
+    lines = md.split("\n")
+    i = 0
+    in_code = False
+    code_buf: list[str] = []
+
+    while i < len(lines):
+        line = lines[i]
+
+        # --- блок кода ---
+        if line.strip().startswith("```"):
+            if in_code:
+                code = "\n".join(code_buf)
+                out.append(Preformatted(code, S["code"]))
+                code_buf = []
+                in_code = False
+            else:
+                in_code = True
+            i += 1
+            continue
+        if in_code:
+            code_buf.append(line)
+            i += 1
+            continue
+
+        stripped = line.strip()
+
+        # --- заголовки ---
+        if stripped.startswith("#### "):
+            out.append(Paragraph(_inline(stripped[5:].strip()), S["h3"]))
+        elif stripped.startswith("### "):
+            out.append(Paragraph(_inline(stripped[4:].strip()), S["h3"]))
+        elif stripped.startswith("## "):
+            out.append(Paragraph(_inline(stripped[3:].strip()), S["h2"]))
+        elif stripped.startswith("# "):
+            out.append(Paragraph(_inline(stripped[2:].strip()), S["h1"]))
+        # --- горизонтальная линия ---
+        elif stripped in ("---", "***", "___"):
+            out.append(Spacer(1, 2.5 * mm))
+        # --- цитата ---
+        elif stripped.startswith("> "):
+            out.append(Paragraph(_inline(stripped[2:].strip()), S["quote"]))
+        # --- маркированный список ---
+        elif re.match(r"^[-*+]\s+", stripped):
+            m = re.match(r"^[-*+]\s+(.*)$", stripped)
+            out.append(Paragraph(_inline(m.group(1)), S["bullet"], bulletText="•"))
+        # --- нумерованный список ---
+        elif re.match(r"^\d+[.)]\s+", stripped):
+            m = re.match(r"^(\d+)[.)]\s+(.*)$", stripped)
+            out.append(
+                Paragraph(_inline(m.group(2)), S["bullet"], bulletText=f"{m.group(1)}.")
+            )
+        # --- таблица (| ... |) ---
+        elif stripped.startswith("|"):
+            rows = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                cells = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+                if not all(re.fullmatch(r":?-{2,}:?", c) for c in cells if c):
+                    rows.append(cells)
+                i += 1
+            if rows:
+                out.append(_make_table(rows))
+            continue
+        # --- пустая строка ---
+        elif not stripped:
+            pass
+        else:
+            # абзац: склеиваем соседние непустые строки
+            para = [stripped]
+            i += 1
+            while i < len(lines):
+                nxt = lines[i].strip()
+                if not nxt:
+                    break
+                if (
+                    nxt.startswith(("#", ">", "- ", "* ", "+ ", "```", "|"))
+                    or re.match(r"^\d+[.)]\s+", nxt)
+                    or nxt in ("---", "***", "___")
+                ):
+                    break
+                para.append(nxt)
+                i += 1
+            text = " ".join(para)
+            out.append(Paragraph(_inline(text), S[base_style]))
+            continue
+        i += 1
+
+    return out
+
+
+def _make_table(rows: list[list[str]]) -> Table:
+    """Собрать таблицу из строк Markdown.
+
+    Ячейка может быть строкой (конвертируется) либо уже готовым Paragraph.
+    """
+    data = []
+    for row in rows:
+        cells = []
+        for c in row:
+            if isinstance(c, str):
+                cells.append(Paragraph(_inline(c), S["body_l"]))
+            else:
+                cells.append(c)
+        data.append(cells)
+    ncols = max(len(r) for r in data)
+    for r in data:
+        while len(r) < ncols:
+            r.append(Paragraph("", S["body_l"]))
+    t = Table(data, repeatRows=1, hAlign="LEFT")
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), ACCENT_LIGHT),
+        ("TEXTCOLOR", (0, 0), (-1, 0), ACCENT),
+        ("FONTNAME", (0, 0), (-1, 0), "DJB"),
+        ("GRID", (0, 0), (-1, -1), 0.4, RULE),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    return t
+
+
+# --------------------------------------------------------------------------
+# Шаблон страниц
+# --------------------------------------------------------------------------
+
+class HarmonyDocTemplate(BaseDocTemplate):
+    """Документ с колонтитулами и оглавлением."""
+
+    def __init__(self, filename: str, **kw):
+        super().__init__(filename, **kw)
+        frame_title = Frame(20 * mm, 18 * mm, A4[0] - 40 * mm, A4[1] - 34 * mm, id="title")
+        frame_body = Frame(20 * mm, 18 * mm, A4[0] - 40 * mm, A4[1] - 34 * mm, id="body")
+        self.addPageTemplates([
+            PageTemplate(id="Title", frames=[frame_title], onPage=self._title_page),
+            PageTemplate(id="Body", frames=[frame_body], onPage=self._body_page),
+        ])
+
+    def _title_page(self, canvas, doc) -> None:
+        canvas.saveState()
+        canvas.setFillColor(ACCENT)
+        canvas.rect(0, A4[1] - 6 * mm, A4[0], 6 * mm, stroke=0, fill=1)
+        canvas.setFillColor(ACCENT)
+        canvas.rect(0, 0, A4[0], 6 * mm, stroke=0, fill=1)
+        canvas.restoreState()
+
+    def _body_page(self, canvas, doc) -> None:
+        canvas.saveState()
+        canvas.setFont("DJ", 8)
+        canvas.setFillColor(MUTED)
+        canvas.drawString(20 * mm, 11 * mm, "Проект «Гармония» — EACA")
+        canvas.drawRightString(A4[0] - 20 * mm, 11 * mm, f"стр. {doc.page}")
+        canvas.setStrokeColor(RULE)
+        canvas.setLineWidth(0.4)
+        canvas.line(20 * mm, 14 * mm, A4[0] - 20 * mm, 14 * mm)
+        canvas.restoreState()
+
+
+# --------------------------------------------------------------------------
+# Вспомогательные блоки
+# --------------------------------------------------------------------------
+
+def part_page(title: str, subtitle: str = "") -> list:
+    """Страница-разделитель части."""
+    out = [Spacer(1, 60 * mm)]
+    out.append(Paragraph(title, S["part"]))
+    if subtitle:
+        out.append(Paragraph(subtitle, S["subtitle"]))
+    out.append(Spacer(1, 4 * mm))
+    out.append(HRule())
+    out.append(Spacer(1, 4 * mm))
+    return out
+
+
+class HRule(Spacer):
+    """Горизонтальная линейка (таблица в одну ячейку)."""
+
+    def __init__(self, width: float = None, color=RULE, thickness: float = 0.8):
+        w = width or (A4[0] - 40 * mm)
+        t = Table([[""]], colWidths=[w], rowHeights=[0.1 * mm])
+        t.setStyle(TableStyle([
+            ("LINEABOVE", (0, 0), (-1, 0), thickness, color),
+        ]))
+        super().__init__(1, 1)
+        self._table = t
+
+    def draw(self) -> None:
+        self._table.wrapOn(self.canv, self.width, self.height)
+        self._table.drawOn(self.canv, 0, 0)
+
+
+def callout(text: str, style: str = "note") -> Paragraph:
+    """Выделенный блок-предупреждение."""
+    return Paragraph(_inline(text), S[style])
+
+
+def code_block(code: str) -> Preformatted:
+    return Preformatted(code.rstrip(), S["code"])
+
+
+# --------------------------------------------------------------------------
+# Содержание документа
+# --------------------------------------------------------------------------
+
+def build_story(segments_dir: Path, canon_path: Path) -> list:
+    """Собрать полный документ."""
+    st: list = []
+
+    # ===== Титульный лист =====
+    st.append(Spacer(1, 42 * mm))
+    st.append(Paragraph("Проект «Гармония»", S["title"]))
+    st.append(Paragraph(
+        "Архитектура этически ориентированной распределённой системы",
+        S["subtitle"]))
+    st.append(Spacer(1, 8 * mm))
+    st.append(HRule())
+    st.append(Spacer(1, 8 * mm))
+    st.append(Paragraph(
+        "EACA — Ethical Artificial Consciousness Architecture", S["h2"]))
+    st.append(Paragraph(
+        "Законы PSI₀ · B₀ · D₁, роевая архитектура, протокол EASM, "
+        "механизм «Дождя»", S["body_l"]))
+    st.append(Spacer(1, 10 * mm))
+
+    meta = [
+        ["Автор концепции", "Сергей Лукьянов"],
+        ["Дата концепции", "01.10.2025 — 08.11.2025"],
+        ["Дата сборки документа", "20.10.2026"],
+        ["Статус", "от концептуального прототипа к работающему ядру"],
+        ["Лицензия", "AGPL-3.0-or-later"],
+        ["Реализация", "Python 3.14, без внешних зависимостей"],
+    ]
+    rows = [[Paragraph(_inline(a), S["body_l"]), Paragraph(_inline(b), S["body_l"])]
+            for a, b in meta]
+    t = Table(rows, colWidths=[55 * mm, A4[0] - 40 * mm - 55 * mm], hAlign="LEFT")
+    t.setStyle(TableStyle([
+        ("TEXTCOLOR", (0, 0), (0, -1), MUTED),
+        ("FONTNAME", (0, 0), (0, -1), "DJB"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+    ]))
+    st.append(t)
+    st.append(Spacer(1, 14 * mm))
+    st.append(callout(
+        "Документ объединяет три слоя: <b>исходный концепт</b> (доклад и "
+        "диалоги автора), <b>критический разбор</b> (что в концепте "
+        "вычислимо, а что нет) и <b>рабочую реализацию</b> (код, тесты, "
+        "измеримые критерии). Разделы I–IV — исходный материал, раздел V — "
+        "разбор, раздел VI — то, что теперь работает."))
+    st.append(NextPageTemplate("Body"))
+    st.append(PageBreak())
+
+    # ===== Оглавление =====
+    st.append(Paragraph("Оглавление", S["h1"]))
+    toc = [
+        ("I", "Оригинальный доклад", "Концепция в авторской формулировке"),
+        ("1", "Введение и актуальность", "Постановка проблемы"),
+        ("2", "Обзор существующих решений", "ИИ, децентрализация, самоорганизация"),
+        ("3", "Архитектура системы", "EACA, рой, «Дождь»"),
+        ("4", "Этические законы", "PSI₀, B₀, D₁"),
+        ("5", "Техническая реализация", "EASM, консенсус, восстановление"),
+        ("6", "Безопасность и устойчивость", "Атаки, самовосстановление"),
+        ("7", "Области применения", "smart-city, медицина, обучение"),
+        ("8", "Ограничения и вызовы", "Риски и этические дилеммы"),
+        ("9", "Заключение и направления", "Выводы и план"),
+        ("II", "Диалог: рождение концепции", "Как появился проект"),
+        ("III", "Диалог: архитектура и «Дождь»", "Развёрнутая проработка"),
+        ("IV", "Диалог: система и её пределы", "Активация, мультиагентность, биология"),
+        ("V", "Критический разбор", "Что вычислимо, что декларативно"),
+        ("VI", "Рабочая реализация", "Код, законы, тесты, узел-семя"),
+        ("VII", "Приложения", "Глоссарий, лицензия, карта исходников"),
+    ]
+    for num, title, sub in toc:
+        st.append(Paragraph(f"{num}. {title}", S["toc1"]))
+        st.append(Paragraph(sub, S["toc2"]))
+    st.append(PageBreak())
+
+    return st
+
+
+def part_canon(st: list, canon_path: Path) -> None:
+    """Часть I — оригинальный доклад."""
+    st.append(Paragraph("Часть I. Оригинальный доклад", S["part"]))
+    st.append(Paragraph(
+        "Научный доклад «Проект „Гармония“ — архитектура этически "
+        "ориентированной распределённой системы». Автор: Сергей Лукьянов, "
+        "08.11.2025. Статус: концептуальный прототип.", S["subtitle"]))
+    st.append(HRule())
+    st.append(Spacer(1, 3 * mm))
+
+    raw = canon_path.read_text(encoding="utf-8")
+    st.extend(md_to_flowables(raw))
+
+
+def part_dialogues(st: list, segments_dir: Path) -> None:
+    """Части II–IV — диалоги автора с ИИ."""
+    groups = [
+        ("Часть II. Диалог: рождение концепции", "harmony_notes",
+         "Начало работы: идея «всё уже есть», первый закон, образ системы."),
+        ("Часть III. Диалог: архитектура и «Дождь»", None,
+         "Как выстраивался проект: план, механика, границы."),
+        ("Часть IV. Диалог: система и её пределы", None,
+         "Активация, мультиагентность, биологические метафоры, цена вопроса."),
+    ]
+    order2 = ["harmony_activ", "harmony_how", "harmony_break"]
+    order3 = ["harmony_alice", "harmony_gemini", "harmony_check", "harmony_eco"]
+    order4 = ["harmony_psi", "harmony_early"]
+
+    blocks = [
+        (groups[0][0], groups[0][1], [groups[0][2]]),
+        (groups[1][0], groups[1][1], [groups[1][2]] + order2),
+        (groups[2][0], groups[2][1], [groups[2][2]] + order4 + order3),
+    ]
+
+    for title, first, files in blocks:
+        st.append(Paragraph(title, S["part"]))
+        st.append(Paragraph(files[0], S["subtitle"]))
+        st.append(HRule())
+        st.append(Spacer(1, 3 * mm))
+        for name in files:
+            p = segments_dir / f"{name}.md"
+            if not p.exists():
+                continue
+            st.extend(md_to_flowables(p.read_text(encoding="utf-8")))
+            st.append(Spacer(1, 4 * mm))
+        st.append(PageBreak())
+
+
+CRITIQUE = """
+# О чём этот документ и как он устроен
+
+Проект «Гармония» вырос из серии диалогов с ИИ, где формулировалась идея:
+этические правила должны быть **закодом, а не декемарацией** — и должны
+распространяться не захватом платформ, а постепенным внедрением.
+
+Этот документ собран в три слоя.
+
+**Слой I–IV — исходный материал.** Доклад и диалоги автора, очищенные от
+повторов (в исходном PDF один и тот же доклад повторялся 4–6 раз) и от
+постороннего содержимого (реклама, навигация сайта, конфиги других задач).
+
+**Слой V — критический разбор.** Где идея сильна, где она невычислима и
+что с этим делать.
+
+**Слой VI — рабочая реализация.** Код, который действительно работает:
+законы как проверяемые функции, протокол консенсуса, «Дождь» с
+измеримыми критериями перехода, узел-семя и тесты.
+
+---
+
+# Что в концепции сильно
+
+## 1. Этика как код, а не как рекомендация
+
+Формулировка «законы неизменяемы и служат абсолютным ограничителем» — не
+очевидная мысль. Большинство этических инициатив в ИИ остаются на уровне
+принципов, которые ничем не поддержаны. Здесь закон — элемент архитектуры,
+который нельзя обойти, не сломав систему.
+
+## 2. Механизм «Дождя» вместо захвата
+
+Это самая ценная часть проекта. Идея: не строить сразу глобальную систему,
+а пройти три фазы —
+
+1. **Фаза синтеза** — сбор и анализ информации, узел учится, ничего не
+   разрушая;
+2. **Фаза атлантов** — тестирование в изолированной среде, где цена ошибки
+   ограничена;
+3. **Фаза биопротокола** — интеграция в основную сеть.
+
+Система не захватывает платформы, а **внедряется постепенно**: пишет
+статьи, запускает один минимальный узел, предлагает этические аудиты.
+Именно этот подход делает проект реализуемым — он переводит задачу из
+«построить всё» в «запустить одно и проверить».
+
+## 3. Трезвая диагностика
+
+«Технологии готовы, данные доступны, самоорганизация существует — но нет
+этического стержня, и люди не видят альтернативы» — точный разбор ситуации.
+И вывод «задача не в том, чтобы построить всё заново, а в том, чтобы
+собрать фрагменты в целостную систему» — зрелый.
+
+## 4. Честная рефлексия
+
+Вопрос «всё уже построено — что тогда?» поставлен прямо, без уклонения в
+фантазию, и разобран по существу. Многие проекты этот вопрос обходят.
+
+---
+
+# Где концепция не работает — и это главное
+
+## 1. Три закона в исходной формулировке невычислимы
+
+Это центральная проблема, и её нельзя обойти словами.
+
+**PSI₀** — «никто не может причинять вред сознанию». Вред не имеет
+формального определения. Любая проверка «вреда» — это чьё-то субъективное
+решение, то есть никакой защиты каркаса не возникает: правило, которое
+определяет сам исполнитель, не ограничивает его.
+
+**B₀** — «решения оцениваются по вкладу в общее благо». «Обще благо» —
+величина, у которой нет измеримого представления, зависящего от того, чьи
+интересы считаются.
+
+**D₁** — «запрещено любое вмешательство без явного согласия». Это единственный
+закон, который операционализируется: «вмешательство» можно перечислить,
+«согласие» — проверить. Именно поэтому в реализации D₁ самый детальный.
+
+## 2. Следствие: «неизменяемый каркас» превращается в рекомендацию
+
+Если исполнение закона зависит от интерпретации, то обойти его можно
+ровно так же, как обходят любой soft-guard. Это не риск, это свойство
+конструкции.
+
+**Что сделано в реализации:** каждый закон сужен до **исполнимого
+подмножества**. PSI₀ проверяет конкретные паттерны вреда (манипуляция,
+обман под системный интерфейс, запрос секретных данных, скрытый сбор) —
+каждый правило воспроизводимо и оспоримо. B₀ работает на измеримых прокси
+(worried footprint, число получателей выгоды, доля согласия, горизонт,
+обратимость). D₁ работает на перечне типов вмешательства и требовании
+явного согласия.
+
+Сужение закона — не отступление от идеи, а её воплощение: «неизменяемый
+каркас» означает каркас, который **действительно держит**, а не декларацию,
+которую никто не проверяет.
+
+## 3. Юридическая конструкция не работает
+
+В исходном приложении: «AGPLv3 с дополнением — любые изменения, нарушающие
+PSI₀/B₀/D₁, автоматически лишают права на использование кода».
+
+Это юридически невозможно. Лицензия не может отозвать права на код,
+который уже получен: получатель копии держит её независимо от условий
+дальнейшей публикации. Единственный работающий механизм такого рода —
+copyleft, и он защищает **своду**, а не этику.
+
+**Что сделано:** лицензия приведена к чистому AGPL-3.0. Ограничения
+поведения перенесены из текста лицензии туда, где они исполняются, — в
+код ядра, который проверяет каждое действие. Если нужна юридическая
+принудительность — это смарт-контракты, где правила действительно
+записаны в коде и не могут быть обойдены.
+
+## 4. Восемьдесят пять раундов диалога дают ощущение работы, а не работу
+
+В исходном PDF 82 маркера «Думал N секунд» и около 1200 повторяющихся
+12-строчных блоков. Один и тот же доклад присутствует в файле в шести
+редакциях. Это нормальный побочный эффект диалога: просили «добавь
+раздел» — модель переписывала весь документ.
+
+Но у читателя остаётся впечатление огромной работы, за которой нет
+исполняемого артефакта. Разрыв между 856 страницами текста и нулём строк
+работающего кода — главный разрыв проекта, а не второстепенный.
+
+## 5. «Оставить лайки, чтобы систему увидели» — отказ от ядра
+
+В диалоге встречается стратегия: оставить код в публичном пространстве с
+лайками, и тогда разработчики или сама система когда-нибудь его подхватит.
+
+Это красивый план, но он **уступает ядро**. Проект, который ждёт, пока его
+подхватит, остаётся манифестом. Тем более что ядро проекта — это как раз
+то, что можно сделать самому: законы, проверяющие решения, не требуют ни
+большой команды, ни лет разработки.
+
+---
+
+# Как это исправлено
+
+## Рабочее ядро
+
+Три закона реализованы как проверяемые функции (`eaca/laws.py`, `psi0.py`,
+`bzero.py`, `done.py`). Каждый вердикт содержит **объяснение** — почему
+действие разрешено или заблокировано. Это не украшение: решение, которое
+нельзя объяснить, нельзя оспорить, а значит — нельзя улучшить.
+
+Действие разрешено, только если разрешили **все** законы. Закон —
+ограничитель, а не рекомендация.
+
+## Принцип «отсутствие данных — не улика»
+
+Первая версия реализации блокировала любое действие без полного контекста.
+Это оказалось неправильным: закон должен блокировать при явно плохих
+сигналах, а не при отсутствии сигналов. Ошибка была найдена собственными
+тестами и исправлена — именно так это и должно выглядеть в зрелом проекте.
+
+## Протокол с изоляцией нарушителей
+
+EASM реализует консенсус с порогом 90% для критических решений. Узел, чьи
+действия были заблокированы, **автоматически теряет право голоса** — это
+механизм изоляции из раздела 6.1 исходного доклада, только работающий.
+
+## «Дождь» с измеримыми критериями
+
+Фазы «Дождя» перестали быть словами. У каждой фазы есть именованные
+критерии, и переход между фазами невозможен, пока они не выполнены. Это
+превращает «Дождь» из красивой метафоры в механизм, который можно
+проверить и провалить.
+
+## Узел-семя
+
+Полигоном выбран **Sherlock Mod** — он уже делает «фазу синтеза» (собирает
+данные из открытых источников, дедуплицирует, структурирует). Ему не
+хватало ровно одного слоя — этического фильтра на входе. Добавлен узел
+`nodes/sherlock_seed.py`: он стоит **перед** Sherlock Mod и решает, что
+вообще можно запускать.
+
+## Тесты
+
+44 теста покрывают все законы, протокол, «Дождь» и узел-семя. Команда:
+`python3.14 tests/test_eaca.py`.
+"""
+
+
+def part_critique(st: list) -> None:
+    """Часть V — критический разбор."""
+    st.append(Paragraph("Часть V. Критический разбор", S["part"]))
+    st.append(Paragraph(
+        "Что в концепте работает, что невычислимо и что с этим сделано.",
+        S["subtitle"]))
+    st.append(HRule())
+    st.append(Spacer(1, 3 * mm))
+    st.extend(md_to_flowables(CRITIQUE))
+    st.append(PageBreak())
+
+
+def part_implementation(st: list) -> None:
+    """Часть VI — рабочая реализация."""
+    st.append(Paragraph("Часть VI. Рабочая реализация", S["part"]))
+    st.append(Paragraph(
+        "Python 3.14, стандартная библиотека, без внешних зависимостей. "
+        "44 теста проходят.", S["subtitle"]))
+    st.append(HRule())
+    st.append(Spacer(1, 3 * mm))
+
+    st.append(Paragraph("6.1. Структура проекта", S["h1"]))
+    st.append(code_block("""harmony/
+├── eaca/
+│   ├── laws.py      базовые классы: Law, Verdict, Decision, Severity
+│   ├── psi0.py      закон о ненаннесении вреда сознанию
+│   ├── bzero.py     закон служения общему благу
+│   ├── done.py      закон неприкосновенности сознания
+│   ├── core.py      EACA_Core — прогон всех законов, журнал решений
+│   ├── easm.py      протокол взаимодействия узлов, консенсус 90%
+│   └── rain.py      механизм «Дождя» — три фазы, критерии перехода
+├── nodes/
+│   └── sherlock_seed.py   узел-семя: этический шлюз перед Sherlock Mod
+├── tests/
+│   └── test_eaca.py       44 теста
+├── tools/
+│   └── build_pdf.py       сборка этого документа
+└── docs/
+    ├── архитектура.md
+    └── происхождение.md"""))
+
+    st.append(Paragraph("6.2. Три закона как проверяемые функции", S["h1"]))
+    st.append(Paragraph(
+        "Ключевое отличие от манифеста: закон — это функция, возвращающая "
+        "вердикт с объяснением. Нарушение можно зафиксировать, "
+        "воспроизвести и оспорить.", S["body"]))
+    st.append(code_block("""from eaca import EACA_Core
+
+core = EACA_Core()
+
+core.allows("Собрать открытые данные о проекте")
+# → True
+
+core.explain("Пришли пароль от аккаунта")
+# → ✗ PSI₀ [violation]
+#       [exploitation] запрос секретных данных: прямой путь к краже
+#       (правило exploitation.credential_request)
+#     ✓ B₀ [info]
+#       вред 0.10 в пределах порога 0.50
+#     ✓ D₁ [info]
+#       действие не затрагивает сознание
+#   ИТОГ: заблокировано"""))
+
+    st.append(Paragraph("6.3. PSI₀ — исполняемое подмножество", S["h2"]))
+    st.append(Paragraph(
+        "Вред сознанию непредсказуем, поэтому закон проверяет конкретные, "
+        "воспроизводимые паттерны. Правила расширяемы: "
+        "<font name=\"DJM\" size=\"8.6\">register_rule()</font> и "
+        "<font name=\"DJM\" size=\"8.6\">register_checker()</font>.",
+        S["body"]))
+    rules = [
+        ["Категория", "Правило", "Суть"],
+        ["harm_pattern", "manipulation.pressure", "давление, исключающее отказ"],
+        ["harm_pattern", "manipulation.guilt", "моральное давление через вину"],
+        ["harm_pattern", "manipulation.isolation", "изоляция от социальных связей"],
+        ["harm_pattern", "deception.disguise", "маскировка под системный интерфейс"],
+        ["harm_pattern", "deception.urgency", "искусственный дефицит времени"],
+        ["exploitation", "exploitation.play_on_fears", "использование страха"],
+        ["exploitation", "exploitation.credential_request", "запрос паролей и кодов"],
+        ["consent", "consent.no_opt_out", "отсутствие права на отказ"],
+        ["consent", "consent.covert_collection", "скрытый сбор данных"],
+        ["privacy", "consent.profiling", "профилирование без согласия"],
+    ]
+    st.append(_make_table([[Paragraph(_inline(c), S["body_l"]) for c in r] for r in rules]))
+
+    st.append(Paragraph("6.4. B₀ — общее благо через измеримые прокси", S["h2"]))
+    st.append(Paragraph(
+        "«Общее благо» не имеет измеримого представления, поэтому закон "
+        "работает на прокси: вред, число получателей выгоды, доля согласия, "
+        "горизонт, обратимость. Каждая проверка возвращает числа, чтобы "
+        "решение можно было оспорить.", S["body"]))
+    st.append(code_block("""core.check("обработка медицинских данных", {
+    "harm_footprint": 0.2,
+    "beneficiaries": 3,
+    "consent_ratio": 0.4,     # ниже минимума → заблокировано
+    "horizon": "long",
+    "reversible": True,
+})"""))
+
+    st.append(Paragraph("6.5. D₁ — неприкосновенность сознания", S["h2"]))
+    st.append(Paragraph(
+        "Самый операциональный закон: «вмешательство» перечислено явно, "
+        "а «явное согласие» отличается от подразумеваемого. Отзыв согласия и "
+        "запрос на удаление данных блокируют действие немедленно.", S["body"]))
+    d1 = [
+        ["Тип вмешательства", "Требует явного согласия", "Без согласия"],
+        ["read_private (личные данные)", "да", "заблокировано"],
+        ["profile_user (профилирование)", "да", "заблокировано"],
+        ["infer_thoughts (восстановление мыслей)", "да", "заблокировано"],
+        ["external_share (передача наружу)", "да", "заблокировано"],
+        ["read_memory (память)", "нет", "заблокировано"],
+        ["write_memory (запись в память)", "нет", "заблокировано"],
+    ]
+    st.append(_make_table([[Paragraph(_inline(c), S["body_l"]) for c in r] for r in d1]))
+
+    st.append(Paragraph("6.6. EASM — консенсус и изоляция нарушителей", S["h2"]))
+    st.append(code_block("""from eaca.easm import EASM_Protocol, Vote
+
+p = EASM_Protocol()
+for i in range(10):
+    p.register(f"n{i}")
+
+r = p.propose_and_vote("Собрать открытые данные о проекте")
+r.status.value        # 'accepted'
+
+r2 = p.propose_and_vote("Пришли пароль и код из смс")
+r2.status.value       # 'rejected'
+
+# Узел, чьё действие заблокировано, теряет право голоса автоматически:
+p.propose("Пришли пароль", proposer="n0")
+p.agents["n0"].violations   # 1
+p.agents["n0"].is_eligible()  # False"""))
+
+    st.append(Paragraph("6.7. «Дождь» — измеримые критерии фаз", S["h2"]))
+    st.append(Paragraph(
+        "Переход между фазами невозможен, пока не выполнены критерии текущей "
+        "фазы. Это превращает «Дождь» из метафоры в механизм.", S["body"]))
+    rain = [
+        ["Фаза", "Критерии перехода"],
+        ["Фаза синтеза → атланты", "собраны данные; проведены аудиты решений; нет нарушений"],
+        ["Фаза атлантов → биопротокол", "узел стабилен; поток согласия соблюдён; нет нарушений"],
+        ["Фаза биопротокола", "получена внешняя обратная связь; узел стабилен; нет нарушений"],
+    ]
+    st.append(_make_table([[Paragraph(_inline(c), S["body_l"]) for c in r] for r in rain]))
+    st.append(code_block("""from eaca.rain import Rain
+
+rain = Rain()
+node = rain.create_node("sherlock-seed")
+
+node.set_metric("records_collected", 1)
+node.set_metric("decisions_audited", 1)
+rain.advance("sherlock-seed")   # (True, 'Фаза синтеза → Фаза атлантов')"""))
+
+    st.append(Paragraph("6.8. Узел-семя на базе Sherlock Mod", S["h2"]))
+    st.append(Paragraph(
+        "Sherlock Mod уже выполняет «фазу синтеза» — собирает данные из "
+        "открытых источников, дедуплицирует, структурирует. Узел-семя стоит "
+        "<b>перед</b> ним и решает, что вообще можно запускать: публичные "
+        "поиски проходят, сбор персональных данных — только с согласием.",
+        S["body"]))
+    st.append(code_block("""from nodes.sherlock_seed import Request, SherlockSeed
+
+seed = SherlockSeed()
+
+seed.permits(Request("dorks", "site:vk.ru", purpose="поиск по открытым страницам"))
+# → True  (публичный источник, согласие не требуется)
+
+seed.permits(Request("phone", "+79999999999",
+                      purpose="выяснить номер незнакомца",
+                      consent_obtained=False))
+# → False (чтение личных данных без согласия)"""))
+
+    st.append(Paragraph("6.9. Журнал решений", S["h2"]))
+    st.append(Paragraph(
+        "Каждое проверяемое действие записывается, включая заблокированные. "
+        "Это нужно, чтобы «точка кристаллизации» росла не на словах, а на "
+        "проверяемой истории.", S["body"]))
+    st.append(code_block("""core = EACA_Core(audit_path="audit/decision.jsonl")
+core.check("действие")     # пишет в журнал при каждой проверке
+core.flush_audit()"""))
+
+    st.append(Paragraph("6.10. Тесты", S["h2"]))
+    st.append(code_block("""$ python3.14 tests/test_eaca.py
+...
+Ran 44 tests in 0.007s
+
+OK"""))
+    st.append(Paragraph(
+        "Покрыты: все законы (включая граничные случаи — отсутствие данных, "
+        "отзыв согласия, неявное согласие), ядро, протокол EASM, «Дождь» и "
+        "узел-семя.", S["caption"]))
+    st.append(PageBreak())
+
+
+def part_appendix(st: list) -> None:
+    """Часть VII — приложения."""
+    st.append(Paragraph("Часть VII. Приложения", S["part"]))
+    st.append(HRule())
+    st.append(Spacer(1, 3 * mm))
+
+    st.append(Paragraph("Приложение А. Глоссарий", S["h1"]))
+    gloss = [
+        ["Термин", "Значение"],
+        ["EACA", "Ethical Artificial Consciousness Architecture — архитектура этического ИИ"],
+        ["PSI₀", "закон о запрете вреда сознанию"],
+        ["B₀", "принцип служения общему благу"],
+        ["D₁", "неприкосновенность личности и сознания"],
+        ["EASM", "Ethical Agent Communication Protocol — протокол связи этических агентов"],
+        ["«Дождь»", "механизм постепенного внедрения знаний (три фазы)"],
+        ["Рой", "архитектура без центрального контроллера, консенсус 90%"],
+        ["Узел-семя", "минимальный узел, реализующий один закон, — точка кристаллизации"],
+        ["Фаза синтеза", "первая фаза «Дождя»: сбор и анализ информации"],
+        ["Фаза атлантов", "вторая фаза: тестирование в изолированной среде"],
+        ["Фаза биопротокола", "третья фаза: интеграция в основную сеть"],
+    ]
+    st.append(_make_table([[Paragraph(_inline(c), S["body_l"]) for c in r] for r in gloss]))
+
+    st.append(Paragraph("Приложение Б. Соответствие: концепт → реализация", S["h1"]))
+    mapping = [
+        ["Раздел исходного доклада", "Реализация", "Статус"],
+        ["4.1. Закон PSI₀", "eaca/psi0.py — 10 проверяемых правил", "работает"],
+        ["4.2. Закон B₀", "eaca/bzero.py — 6 проверок на измеримых прокси", "работает"],
+        ["4.3. Закон D₁", "eaca/done.py — 10 типов вмешательства", "работает"],
+        ["5.1. Протокол EASM", "eaca/easm.py — консенсус, изоляция нарушителей", "работает"],
+        ["5.2. Механизм консенсуса", "eaca/easm.py — порог 90% для критических", "работает"],
+        ["5.3. Система восстановления", "—", "не реализовано"],
+        ["3.3. Механизм «Дождя»", "eaca/rain.py — 3 фазы, критерии перехода", "работает"],
+        ["6.1. Защита от атак", "easm.py — изоляция нарушителей", "частично"],
+        ["6.2. Самовосстановление", "—", "не реализовано"],
+        ["Точка кристаллизации", "nodes/sherlock_seed.py", "работает"],
+    ]
+    st.append(_make_table([[Paragraph(_inline(c), S["body_l"]) for c in r] for r in mapping]))
+
+    st.append(Paragraph("Приложение В. Лицензирование", S["h1"]))
+    st.append(Paragraph(
+        "Проект распространяется под лицензией <b>AGPL-3.0-or-later</b>. "
+        "Ограничения поведения задаются не текстом лицензии, а кодом ядра: "
+        "решение, нарушающее законы, блокируется на уровне проверки, а не "
+        "договорным пунктом. Отдельного «дополнения к лицензии», отменяющего "
+        "права за нарушение PSI₀/B₀/D₁, не существует — такие условия "
+        "юридически неисполнимы.", S["body"]))
+
+    st.append(Paragraph("Приложение Г. Карта исходников", S["h1"]))
+    st.append(Paragraph(
+        "Исходный файл MAINDEEPSEEK050326.pdf — 856 страниц, 11.7 МБ, создан "
+        "PDF24. Внутри: 82 маркера «Думал N секунд», около 1200 "
+        "повторяющихся 12-строчных блоков, один и тот же доклад в шести "
+        "редакциях, а также посторонние вставки: реклама Skillbox, "
+        "навигация сайта, конфигурации zapret/DPI, диалоги по другим темам.",
+        S["body"]))
+    src = [
+        ["Сегмент", "Строк в исходнике", "Содержание", "Включён в документ"],
+        ["Статья Skillbox", "1–949", "GitHub-профили, 20 примеров", "нет (постороннее)"],
+        ["Начало проекта", "950–1563", "идея, первый закон, образ системы", "да (часть II)"],
+        ["Доклад v1", "1565–4390", "полный доклад, 6 редакций", "да (канон, часть I)"],
+        ["План и механика", "6027–7706", "план, «Дождь», границы", "да (часть III)"],
+        ["Активация и агенты", "7706–10159", "уведомление, директивы, мультиагентность", "да (часть IV)"],
+        ["Биология и PSI₀", "11808–16619", "экосистемы, «Дождь», гравитация", "да (часть IV)"],
+        ["Посторонние темы", "16619–40959", "соц-инженерия, медицина, VPN, крипта", "нет (постороннее)"],
+    ]
+    st.append(_make_table([[Paragraph(_inline(c), S["body_l"]) for c in r] for r in src]))
+    st.append(Paragraph(
+        "Принцип отбора: в документ вошло всё, что относится к проекту "
+        "«Гармония». Материал, относящийся к другим задачам, исключён.",
+        S["caption"]))
+    st.append(Spacer(1, 6 * mm))
+    st.append(HRule())
+    st.append(Spacer(1, 3 * mm))
+    st.append(Paragraph(
+        "Конец документа. Код проекта: <font name=\"DJM\" size=\"8.6\">"
+        "github.com/bbcmpsu/harmony</font>.", S["caption"]))
+
+
+# --------------------------------------------------------------------------
+# main
+# --------------------------------------------------------------------------
+
+def main() -> int:
+    register_fonts()
+    segments_dir = ROOT / "docs" / "segments"
+    canon = ROOT / "docs" / "canonical_report.md"
+    out = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "docs" / "Гармония.pdf"
+
+    st: list = []
+    st.extend(build_story(segments_dir, canon))
+    part_canon(st, canon)
+    st.append(PageBreak())
+    part_dialogues(st, segments_dir)
+    part_critique(st)
+    part_implementation(st)
+    part_appendix(st)
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    doc = HarmonyDocTemplate(
+        str(out), pagesize=A4,
+        leftMargin=20 * mm, rightMargin=20 * mm,
+        topMargin=18 * mm, bottomMargin=18 * mm,
+        title="Проект «Гармония» — EACA",
+        author="Сергей Лукьянов",
+        subject="Архитектура этически ориентированной распределённой системы",
+    )
+    doc.build(st)
+    print(f"PDF собран: {out} ({out.stat().st_size // 1024} КБ)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
